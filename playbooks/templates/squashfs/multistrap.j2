@@ -1,0 +1,22 @@
+[General]
+arch=amd64
+directory={{ work_dir }}/rootfs/
+cleanup=true
+noauth=true
+explicitsuite=false
+unpack=true
+allowrecommends=true
+bootstrap=xenial xenial-updates
+aptsources=xenial xenial-updates
+
+[xenial]
+packages={{ squashfs.packages | join(' ') }}
+source=http://archive.ubuntu.com/ubuntu/
+suite=xenial
+components=main universe multiverse
+
+[xenial-updates]
+packages=linux-image-{{ kernel_version }}
+source=http://archive.ubuntu.com/ubuntu/
+suite=xenial-updates
+components=main universe multiverse

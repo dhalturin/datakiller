@@ -1,0 +1,43 @@
+---
+- hosts: all
+  become: yes
+  gather_facts: no
+  pre_tasks:
+    - set_fact: delay_1={{ delay | regex_replace('([^0-9]+)', '') }}
+    - set_fact: delay_2={{ delay | regex_replace('([0-9]+)', '') | regex_replace('S', '1') | regex_replace('M', '60') | regex_replace('H', '3600') }}
+
+    - set_fact: sleep_1={{ sleep | regex_replace('([^0-9]+)', '') }}
+    - set_fact: sleep_2={{ sleep | regex_replace('([0-9]+)', '') | regex_replace('S', '1') | regex_replace('M', '60') | regex_replace('H', '3600') }}
+  tasks:
+    - name: Get release version
+      set_fact:
+        release_version: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+    - name: Prepare nginx directories
+      file:
+        path: "/var/www/html/datakiller"
+        state: directory
+
+    - name: Update datakiller
+      template:
+        src: datakiller/datakiller.j2
+        dest: "/var/www/html/datakiller/release-{{ release_version }}.sh"
+        mode: 0400
+        owner: www-data
+        group: www-data
+      register: state_release
+
+    - name: Cleant up releases
+      shell: "find /var/www/html/datakiller -name release-$(date +%Y%m)* | sort -r | tail -n +{{keep_releases | int + 1}} | xargs rm -rf"
+      when: keep_releases > 0
+
+    - name: Create symlink
+      file:
+        path: "/var/www/html/datakiller/latest.sh"
+        src: "/var/www/html/datakiller/release-{{ release_version }}.sh"
+        state: link
+
+    - name: Put current release name
+      copy:
+        content: "release-{{ release_version }}.sh"
+        dest: "/var/www/html/datakiller/current.txt"

@@ -1,0 +1,127 @@
+---
+- hosts: all
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Get release version
+      set_fact:
+        release_version: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+    - name: Remove old build directory
+      file:
+        path: "{{ work_dir }}/{{ item }}"
+        state: absent
+      with_items:
+        - image
+        - initrd
+        - syslinux
+
+    - name: Prepare build directories
+      file:
+        path: "{{ work_dir }}/{{ item }}"
+        state: directory
+      with_items:
+        - image
+        - initrd
+        - syslinux
+
+    - name: Prepare nginx directories
+      file:
+        path: "/var/www/html/image"
+        state: directory
+
+    - name: Install packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - genisoimage
+        - cpio
+        - lzma
+
+    - name: Download syslinux
+      unarchive:
+        src: https://www.kernel.org/pub/linux/utils/boot/syslinux/syslinux-{{ syslinux.version }}.tar.gz
+        dest: "{{ work_dir }}/syslinux"
+        remote_src: yes
+
+    - name: Copying files
+      copy:
+        src: "{{ work_dir }}/syslinux/syslinux-{{ syslinux_version }}/{{ item }}"
+        dest: "{{ work_dir }}/image/"
+        remote_src: yes
+      with_items: "{{ syslinux.files }}"
+
+    - name: Copying isolinux.cfg
+      template:
+          src: image/isolinux.j2
+          dest: "{{ work_dir }}/image/isolinux.cfg"
+
+    - name: Copying initrd
+      copy:
+        src: "image/initrd.img-{{ kernel_version }}"
+        dest: "{{ work_dir }}/image/initrd.img-{{ kernel_version }}"
+
+    - name: Copying kernel
+      copy:
+        src: "image/vmlinuz-{{ kernel_version }}"
+        dest: "{{ work_dir }}/image/vmlinuz-{{ kernel_version }}"
+
+    - name: Unpack initrd
+      shell: "zcat {{ work_dir }}/image/initrd.img-{{ kernel_version }} | cpio -idmv"
+      args:
+        chdir: "{{ work_dir }}/initrd/"
+
+    - name: Download busybox
+      get_url:
+        url: https://busybox.net/downloads/binaries/{{ busybox_version }}/busybox
+        dest: "{{ work_dir }}/initrd/bin/busybox-new"
+        mode: 0755
+        validate_certs: no
+        force: yes
+
+    - name: Copying init
+      copy:
+        src: image/init
+        dest: "{{ work_dir }}/initrd/init"
+
+    - name: Unpack modules
+      unarchive:
+        src: "image/deps.tar.gz"
+        # dest: "{{ work_dir }}/initrd/lib/modules/{{ kernel_version }}/kernel/"
+        dest: "{{ work_dir }}/initrd/"
+    
+    - name: Update resolv.conf
+      copy:
+        content: "nameserver 8.8.8.8"
+        dest: "{{ work_dir }}/initrd/etc/resolv.conf"
+
+    - name: Build initrd
+      shell: "find . 2>/dev/null | cpio --quiet --dereference -o -H newc | gzip -9 > {{ work_dir }}/image/initrd.img-{{ kernel_version }}"
+      args:
+        chdir: "{{ work_dir }}/initrd/"
+
+    - name: Build image iso
+      shell: "genisoimage -input-charset iso8859-1 -l -r -J -V ARCH_201209 -b isolinux.bin -no-emul-boot -boot-load-size 4 -boot-info-table -c boot.cat -o /var/www/html/image/release-{{ release_version }}.iso {{ work_dir }}/image/"
+
+    - name: Reset permissions
+      file:
+        path: /var/www/html/image/release-{{ release_version }}.iso
+        owner: www-data
+        group: www-data
+        mode: 0400
+
+    - name: Cleant up releases
+      shell: "find /var/www/html/image -name image-$(date +%Y%m)* | sort -r | tail -n +{{keep_releases | int + 1}} | xargs rm -rf"
+      when: keep_releases > 0
+
+    - name: Create symlink
+      file:
+        path: "/var/www/html/image/latest.iso"
+        src: "/var/www/html/image/release-{{ release_version }}.iso"
+        state: link
+
+    - name: Put current release name
+      copy:
+        content: "release-{{ release_version }}.iso"
+        dest: "/var/www/html/image/current.txt"

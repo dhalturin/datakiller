@@ -1,0 +1,5 @@
+play_check_mode:
+  script:
+    - ansible-playbook main.yml -i "localhost," -c local --syntax-check
+    - ansible-playbook main.yml -i "localhost," -c local -vv --diff
+  image: ansible/ansible:ubuntu1604

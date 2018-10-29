@@ -1,0 +1,9 @@
+path
+default vesamenu.c32
+prompt 0
+timeout 500
+
+label live
+  menu label ^Run image
+  kernel /vmlinuz-{{ kernel_version }}
+  append initrd=/initrd.img-{{ kernel_version }} squashfs=http://{{ squashfs.server }}/squashfs/latest.squashfs release={{ release_version }} ---

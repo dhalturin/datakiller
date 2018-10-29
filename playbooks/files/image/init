@@ -1,0 +1,94 @@
+#!/bin/sh
+
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+
+[ -d /dev ] || mkdir -m 0755 /dev
+[ -d /root ] || mkdir -m 0700 /root
+[ -d /sys ] || mkdir /sys
+[ -d /proc ] || mkdir /proc
+[ -d /tmp ] || mkdir /tmp
+mkdir -p /var/lock
+mount -t sysfs -o nodev,noexec,nosuid sysfs /sys
+mount -t proc -o nodev,noexec,nosuid proc /proc
+ln -sf /proc/mounts /etc/mtab
+
+grep -q '\<quiet\>' /proc/cmdline || echo "Loading, please wait..."
+
+mkdir /dev/pts
+mount -t devpts -o noexec,nosuid,gid=5,mode=0620 devpts /dev/pts || true
+mount -t tmpfs -o "noexec,nosuid,size=10%,mode=0755" tmpfs /run
+mkdir -m 0755 /run/initramfs
+
+export DPKG_ARCH=
+. /conf/arch.conf
+
+export MODPROBE_OPTIONS="-qb"
+
+. /conf/initramfs.conf
+for conf in conf/conf.d/*; do
+	[ -f ${conf} ] && . ${conf}
+done
+. /scripts/functions
+
+maybe_break top
+export BOOT
+
+run_scripts /scripts/init-top
+
+set -x
+
+busybox-new depmod -a
+busybox-new modprobe -v xfs
+busybox-new modprobe -v btrfs
+busybox-new modprobe -v ipmi_si
+busybox-new modprobe -v ipmi_devintf
+busybox-new modprobe -v bnx2
+
+for x in $(cat /proc/cmdline); do
+        case $x in
+        squashfs=*)
+                squashfs=${x#squashfs=}
+                ;;
+        esac
+done
+
+sleep 5
+
+dhclient -4 || (echo Error! Ip address not found && exec busybox-new ash)
+
+# ip l show | egrep '^[0-9]' | cut -f 2 -d ':' | grep -v lo | while read INTERFACE
+# do
+# 		read
+# 		echo Use interface: ${INTERFACE}
+# 		dhclient -4 ${INTERFACE}
+#
+# 		IP=$(ip -4 a show dev ${INTERFACE} | grep inet | sed 's/.*inet //g' | cut -f 1 -d '/')
+#
+# 		if [ ! -z "${IP}" ]; then
+# 				echo Ip address: ${IP}
+# 				break
+# 		fi
+# done
+
+mkdir -p /mnt/ro /mnt/rw
+
+cat /etc/resolv.conf
+echo Download squashfs
+# Old busybox don't resolve host
+busybox-new wget -O /tmp/root.squashfs ${squashfs} || (echo Error! Image squashfs not found && exec busybox-new ash)
+
+echo Mount squashfs
+mount -t squashfs -o loop /tmp/root.squashfs /mnt/ro
+
+echo Mount tmpfs
+mount -t tmpfs -o size=1G none /mnt/rw
+set +x
+
+cp -r /mnt/ro/* /mnt/rw/
+
+mount --move /proc /mnt/rw/proc
+mount --move /sys /mnt/rw/sys
+mount --move /dev /mnt/rw/dev
+mount --move /run /mnt/rw/run
+
+exec switch_root /mnt/rw /sbin/init

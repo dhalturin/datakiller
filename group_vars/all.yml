@@ -1,0 +1,66 @@
+---
+work_dir: /tmp/build
+
+kernel_version: 4.15.0-36-generic
+
+busybox_version: 1.27.1-i686
+
+syslinux_version: 6.03
+syslinux:
+  version: 6.03
+  files:
+    - bios/core/isolinux.bin
+    - bios/com32/elflink/ldlinux/ldlinux.c32
+    - bios/com32/lib/libcom32.c32
+    - bios/com32/libutil/libutil.c32
+    - bios/com32/menu/vesamenu.c32
+
+squashfs:
+  server: datakiller01.example.com
+  packages:
+    - apt
+    - vim
+    - ssh
+    - e2fsprogs
+    - parted
+    - python
+    - screen
+    - iproute
+    - net-tools
+    - isc-dhcp-client
+    - less
+    - udev
+    - kmod
+    - lsof
+    - strace
+    - curl
+    - sysstat
+    - gnupg
+    - dmsetup
+    - lvm2
+    - iptables
+    - jq
+    - xfsdump
+    - xfsprogs
+
+keep_releases: 5
+
+# delay for start erase disks
+# example: 10S / 1M / 1H / false
+delay: 1H
+
+# sleep for next check dd process
+# example: 10S / 1M / 1H
+sleep: 30M
+
+# Devise pattern
+# example: sd.* => [ sda, sdb, sdc ]
+device: 'sd.*'
+
+# params for slack notify
+# example:
+# to: 'datakiller' - public channel
+# to: '@user.name' - private message
+slack:
+    to: 'datakiller'
+    token: 'xoxb-************-************************'

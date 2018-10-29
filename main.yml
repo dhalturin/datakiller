@@ -1,0 +1,10 @@
+---
+
+- include: playbooks/image.yml
+  tags: image
+
+- include: playbooks/squashfs.yml
+  tags: squashfs
+
+- include: playbooks/datakiller.yml
+  tags: datakiller

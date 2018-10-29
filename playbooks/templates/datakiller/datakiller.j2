@@ -1,0 +1,260 @@
+#!/bin/bash
+
+FORCE=false
+BINARY=$(basename ${0})
+BINARY_FILE=/usr/local/sbin/datakiller
+WORK_DIR={{ work_dir }}
+RELEASE_DATAKILLER={{ release_version }}
+DEVICE_PATTERN="^({{ device }})"
+{% if delay %}
+DELAY={{ (delay_1 | int) * (delay_2 | int) }}
+{% endif %}
+WAIT={{ (sleep_1 | int) * (sleep_2 | int) }}
+
+show_help() {
+    cat <<EOF
+Use: ${BINARY} [options]
+
+OPTIONS
+  -f force run
+  -p prepare this host
+  -r run datakiller
+  -a abort
+  -v show release version
+
+EXAMPLE
+${BINARY} -p
+${BINARY} -r
+${BINARY} -fpr
+${BINARY} -a
+${BINARY} -v
+EOF
+    exit
+}
+
+if [ -z "${*}" ]; then
+    show_help
+fi
+
+if [ "${1}" == "install" ]; then
+    sleep 10
+
+    curl -sL http://{{ squashfs.server }}/datakiller/latest.sh -o ${BINARY_FILE}
+    chmod +x ${BINARY_FILE}
+
+    chmod 777 /var/run/screen
+
+    ${BINARY_FILE} -p > /dev/tty1
+    ${BINARY_FILE} -r > /dev/tty1
+fi
+
+out() {
+    echo "[$(date +%Y/%m/%d\ %H:%M:%S)] datakiller: ${@}"
+}
+
+prepare() {
+    mkdir -p ${WORK_DIR}
+    rm -f ${WORK_DIR}/prepared
+
+    if [ ! -f "${WORK_DIR}/passwd" ]; then
+        out "[ > ] Reset root password"
+        password=$(date +%s | md5sum | head -c 8)
+        echo ${password} | tee ${WORK_DIR}/passwd | xargs -I {} echo "root:{}" | chpasswd
+        out "[ < ] Password: ${password}"
+
+        out "[ > ] Get current ip address"
+        ip=$(ip -4 a | grep inet | awk '{if ($5 != "lo") print $2 }' | cut -f1 -d '/' | xargs echo | sed 's/ /, /')
+        out "[ < ] Ip address: ${ip}"
+
+        cat - > ${WORK_DIR}/slack_00-current <<EOF
+{ "short": true, "title": "Datakiller host", "value": "${ip}, ${password}" }
+EOF
+    fi
+
+    if [ ${FORCE} = false ] && [ ! -f "${WORK_DIR}/hostname" ]; then
+        > ${WORK_DIR}/device-list
+
+        out "[ > ] Find devices"
+        fdisk -l | sed '1,/^Device/d' | egrep -o '\/dev\/(.*?)' | grep -v containers_ | awk '{print $1}' | sed -E 's/([:!,])//g' >> ${WORK_DIR}/device-list
+
+        out "[ < ] "$(cat ${WORK_DIR}/device-list | tr '\n' ',')
+
+        while read device; do
+            out "[ > ] Processing ${device}"
+            umount /mnt 2>/dev/null
+            mount ${device} /mnt 2>/dev/null
+
+            if [ "$?" -gt "0" ]; then
+                out "[ < ] Error! Device is not mount"
+                continue
+            fi
+
+            if [ ! -d "/mnt/etc" ]; then
+                out "[ < ] Directory '/etc' not found"
+                continue
+            fi
+
+            out "[ > ] Get hostname"
+            hostname=$(grep $(cat /mnt/etc/hostname) /mnt/etc/hosts | awk '{print $2}' | tee ${WORK_DIR}/hostname)
+            out "[ < ] Hostname: ${hostname}"
+            cat - > ${WORK_DIR}/slack_01-hostname <<EOF
+{ "short": true, "title": "Hostname", "value": "${hostname}" }
+EOF
+
+            out "[ > ] Get host ip address"
+            ips=$(grep -r address /mnt/etc/network/interfaces* | sed 's/.*://g' | awk '{print $2}' | xargs echo | sed 's/ /, /')
+            out "[ < ] Ip address: ${ips}"
+            cat - > ${WORK_DIR}/slack_02-ips <<EOF
+{ "short": true, "title": "Host ips", "value": "${ips}" }
+EOF
+
+            break
+        done < ${WORK_DIR}/device-list
+    fi
+
+    > ${WORK_DIR}/disk-list
+
+    out "[ > ] Get disk list"
+    fdisk -l | egrep -i "disk /dev/(sd.*)" | awk '{print $2}' | sed -E 's/([:!,])//g' | while read disk; do
+        echo "${disk}:$(lsblk -ndro SIZE ${disk})" | tee -a ${WORK_DIR}/disk-list
+    done
+    
+    disks=$(cat ${WORK_DIR}/disk-list | cut -f3 -d'/' | xargs echo | sed 's/ /, /')
+    out "[ < ] ${disks}"
+
+    cat - > ${WORK_DIR}/slack_02-disk-list <<EOF
+{ "short": true, "title": "Disks list", "value": "${disks}" }
+EOF
+
+    command -v ipmitool
+    if [ "$?" -gt 0 ]; then
+        out "[ > ] Setup ipmitool"
+        (apt update >>${WORK_DIR}/.apt 2>&1 && apt install -y ipmitool >>${WORK_DIR}/.apt 2>&1)
+        out "[ < ] "$(test "$?" -eq 0 && echo -n "OK" || echo -n "Error")
+    fi
+
+    out "[ > ] Get iDRAC"
+    idrac=$(ipmitool lan print | egrep 'IP Address([\ ]+):' | awk '{print $4}')
+    out "[ < ] iDRAC: ${idrac}"
+    cat - > ${WORK_DIR}/slack_01-idrac <<EOF
+{ "short": true, "title": "iDRAC", "value": "${idrac}" }
+EOF
+
+    touch ${WORK_DIR}/prepared
+}
+
+slack() {
+    out "${@}"
+
+    if [ ! -f "${WORK_DIR}/ts" ]; then
+        FIELDS=$(cat ${WORK_DIR}/slack_* | tr '\n' ',' | sed 's/,$//' | sed 's/\//\\\//g')
+        ATTACH=$(echo '[ { "color": "#36a64f", "text": "_MESSAGE_", "fields": [ _FIELDS_ ] } ]' | sed "s/_FIELDS_/${FIELDS}/" | sed "s/_MESSAGE_/${@}/")
+        curl -k -s -X POST "https://slack.com/api/chat.postMessage?token={{ slack.token }}&channel={{ slack.to }}&icon_emoji=:hammer_and_wrench:&username=datakiller-bot&link_names=1" --data-urlencode "attachments=${ATTACH}" -H "Content-Type: application/x-www-form-urlencoded" | jq -r ".ts" > ${WORK_DIR}/ts
+    else
+        TS=$(cat ${WORK_DIR}/ts)
+        curl -k -s -X POST "https://slack.com/api/chat.postMessage?token={{ slack.token }}&channel={{ slack.to }}&icon_emoji=:hammer_and_wrench:&username=datakiller-bot&thread_ts=${TS}&link_names=1" --data-urlencode "text=${@}" -H "Content-Type: application/x-www-form-urlencoded" > /dev/null
+    fi
+}
+
+run() {
+    rm -f ${WORK_DIR}/ts
+
+    if [ ! -f "${WORK_DIR}/prepared" ] && [ ${FORCE} = false ]; then
+        slack "This host is not prepared. Check it manualy."
+
+        exit 1
+    fi
+
+    if [ ${FORCE} = true ]; then
+        if [ ! -f "${WORK_DIR}/disk-list" ]; then
+            out "This host is not prepared. Run '${BINARY}' with keys 'fpr'."
+            
+            show_help
+        fi
+
+        FORCE=", force run"
+    else
+        FORCE=""
+    fi
+
+    slack "Run datakiller, delay - {{ delay | regex_replace('False', 'none (run now)') | regex_replace('S', ' sec') | regex_replace('M', ' min')  | regex_replace('H', ' hour') }}${FORCE}"
+
+    cat ${WORK_DIR}/disk-list | cut -f1 -d ':' | while read disk
+    do
+        screen -dm -S "disk$(echo ${disk} | tr '/' '-')" bash -c "{% if delay %}sleep ${DELAY} && {% endif %}dd if=/dev/urandom of=${disk} bs=4096 conv=noerror > ${WORK_DIR}/disk$(echo ${disk} | tr '/' '-').log 2>&1"
+    done
+
+    screen -dm -S "wait-dd" bash -c "${BINARY_FILE} -w"
+}
+
+abort() {
+    slack "Abort process"
+
+    ps x -o 'pid,nice,args' | egrep '[S]CREEN -dm -S' | awk '{print $1}' | xargs -I {} kill -9 {}
+}
+
+wait-dd() {
+    {% if delay %}sleep ${DELAY}{% endif %}
+
+    slack "Erase disk is beginning :deploy:"
+
+    while true
+    do
+        sleep ${WAIT}
+
+        PID_COUNT=$(ps x -o 'pid,nice,args' | egrep '[S]CREEN -dm -S' | wc -l)
+        if [ "${PID_COUNT}" -lt 2 ]; then
+            slack "Host sysrq reboot :tada:"
+
+            echo 1 > /proc/sys/kernel/sysrq
+            echo b > /proc/sysrq-trigger
+        fi
+
+        cat ${WORK_DIR}/disk-list | while read LINE
+        do
+            DISK=$(echo ${LINE} | cut -f1 -d':')
+            SIZE=$(echo ${LINE} | cut -f2 -d':')
+
+            PID=$(ps x -o 'pid,nice,args' | egrep "dd.*${DISK}.*noerror$" | awk '{print $1}' | egrep -o '^[0-9]+')
+
+            if [ ! -z "${PID}" ]; then
+                kill -USR1 ${PID}
+
+                tail -n1 ${WORK_DIR}/disk$(echo ${DISK} | tr '/' '-').log | awk "{print \"${DISK} \"\$3 \$4\" of ${SIZE} \"\$10 \$11}" | sed 's/(\|)//g' > ${WORK_DIR}/state$(echo ${DISK} | tr '/' '-')
+            fi
+        done
+
+        slack "$(cat /tmp/build/state-*)"
+    done
+}
+
+source /opt/.squashfs_release
+
+while getopts ":fprawv" opt; do
+  case ${opt} in
+      f)
+          FORCE=true
+      ;;
+      p)
+          prepare
+      ;;
+      r)
+          run
+      ;;
+      a)
+          abort
+      ;;
+      w)
+          wait-dd
+      ;;
+      v)
+          cat <<EOF
+datakiller version: ${RELEASE_DATAKILLER}
+squashfs version: ${RELEASE_SQUASHFS}
+EOF
+      ;;
+      *)
+          show_help
+      ;;
+   esac
+done

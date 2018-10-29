@@ -1,0 +1,5 @@
+#!/bin/sh -e
+
+curl -s -L http://{{ squashfs.server }}/datakiller/latest.sh | bash -s install &
+
+exit 0

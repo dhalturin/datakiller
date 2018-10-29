@@ -1,0 +1,130 @@
+---
+- hosts: all
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Get release version
+      set_fact:
+        release_version: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+    - name: Prepare nginx directories
+      file:
+        path: "/var/www/html/squashfs"
+        state: directory
+
+    - name: Remove old build directory
+      file:
+        path: "{{ work_dir }}/{{ item }}"
+        state: absent
+      with_items:
+        - rootfs
+        - multistrap
+
+    - name: Prepare build directories
+      file:
+        path: "{{ work_dir }}/{{ item }}"
+        state: directory
+      with_items:
+        - rootfs/dev
+        - rootfs/proc
+        - multistrap
+
+    - name: Install packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - squashfs-tools
+        - multistrap
+
+    - name: Copying multistrap.cfg
+      template:
+          src: squashfs/multistrap.j2
+          dest: "{{ work_dir }}/multistrap/multistrap.cfg"
+
+    - name: Mount point
+      shell: "mount -o bind /{{ item }} {{ work_dir }}/rootfs/{{ item }}"
+      with_items:
+        - dev
+        - proc
+
+    - name: Bootstrap fs
+      shell: "multistrap -f {{ work_dir }}/multistrap/multistrap.cfg"
+
+    - name: Unmount point
+      shell: "umount {{ work_dir }}/rootfs/{{ item }}"
+      with_items:
+        - dev
+        - proc
+
+    - name: Update hostname
+      copy:
+        content: datakiller
+        dest: "{{ work_dir }}/rootfs/etc/hostname"
+
+    - name: Update resolv.conf
+      copy:
+        content: "nameserver 8.8.8.8"
+        dest: "{{ work_dir }}/rootfs/etc/resolv.conf"
+
+    - name: Update rc.local
+      template:
+        src: squashfs/rc.local.j2
+        dest: "{{ work_dir }}/rootfs/etc/rc.local"
+
+    - name: Prepare directory
+      file:
+        dest: "{{ work_dir }}/rootfs/opt/"
+        state: directory
+        mode: 0755
+
+    - name: Put release version
+      copy:
+        content: "export RELEASE_SQUASHFS={{ release_version }}"
+        dest: "{{ work_dir }}/rootfs/opt/.squashfs_release"
+
+    - name: Update screen permissions
+      file:
+        path: "{{ work_dir }}/rootfs/var/run/screen"
+        state: directory
+        mode: 0777
+
+    - name: Reset root password
+      shell: "chroot {{ work_dir }}/rootfs /bin/bash -c 'echo root:aSTr47qL | chpasswd'"
+
+    - name: Prepare sshd config
+      lineinfile:
+        dest: "{{ work_dir }}/rootfs/etc/ssh/sshd_config"
+        regexp: "^PermitRootLogin.*"
+        line: "PermitRootLogin yes"
+
+    - name: Prepare sshd config
+      lineinfile:
+        dest: "{{ work_dir }}/rootfs/etc/ssh/sshd_config"
+        regexp: "^#PasswordAuth"
+        line: "PasswordAuthentication yes"
+
+    - name: Build squashfs
+      shell: "mksquashfs {{ work_dir }}/rootfs /var/www/html/squashfs/release-{{ release_version }}.squashfs -noappend -always-use-fragments"
+
+    - name: Reset permissions
+      file:
+        dest: /var/www/html/squashfs/release-{{ release_version }}.squashfs
+        owner: www-data
+        group: www-data
+        mode: 0400
+
+    - name: Cleant up releases
+      shell: "find /var/www/html/squashfs -name root-$(date +%Y%m)* | sort -r | tail -n +{{keep_releases | int + 1}} | xargs rm -rf"
+      when: keep_releases > 0
+
+    - name: Create symlink
+      file:
+        path: "/var/www/html/squashfs/latest.squashfs"
+        src: "/var/www/html/squashfs/release-{{ release_version }}.squashfs"
+        state: link
+
+    - name: Put current release name
+      copy:
+        content: "release-{{ release_version }}.squashfs"
+        dest: "/var/www/html/squashfs/current.txt"
